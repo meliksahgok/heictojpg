@@ -93,12 +93,58 @@
         }
 
         .file-item {
-            padding: 8px 12px;
+            padding: 10px 12px;
             background: #f5f5f5;
             border-radius: 6px;
             margin-bottom: 8px;
             font-size: 0.85em;
             color: #666;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .file-status {
+            font-size: 0.75em;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+
+        .file-status.pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .file-status.processing {
+            background: #cfe2ff;
+            color: #084298;
+        }
+
+        .file-status.success {
+            background: #d1e7dd;
+            color: #0f5132;
+        }
+
+        .file-status.error {
+            background: #f8d7da;
+            color: #842029;
+        }
+
+        .file-progress {
+            width: 100%;
+            height: 4px;
+            background: #e0e0e0;
+            border-radius: 2px;
+            margin-top: 6px;
+            overflow: hidden;
+        }
+
+        .file-progress-bar {
+            height: 100%;
+            background: #667eea;
+            width: 0%;
+            transition: width 0.3s;
         }
 
         .controls {
@@ -374,9 +420,27 @@
                 return;
             }
 
-            fileList.innerHTML = selectedFiles.map(file => 
-                `<div class="file-item">${file.name} (${formatFileSize(file.size)})</div>`
-            ).join('');
+            fileList.innerHTML = selectedFiles.map((file, index) => {
+                const status = file.status || 'pending';
+                const statusText = {
+                    'pending': 'Bekliyor',
+                    'processing': 'İşleniyor...',
+                    'success': '✓ Tamamlandı',
+                    'error': '✗ Hata'
+                }[status] || 'Bekliyor';
+                
+                return `
+                    <div class="file-item" data-index="${index}">
+                        <div style="flex: 1;">
+                            <div>${file.name} (${formatFileSize(file.size)})</div>
+                            <div class="file-progress" style="display: ${status === 'processing' ? 'block' : 'none'};">
+                                <div class="file-progress-bar" style="width: ${file.progress || 0}%"></div>
+                            </div>
+                        </div>
+                        <div class="file-status ${status}">${statusText}</div>
+                    </div>
+                `;
+            }).join('');
         }
 
         function formatFileSize(bytes) {
@@ -392,7 +456,7 @@
             qualityValue.textContent = e.target.value;
         });
 
-        // Form gönderimi
+        // Form gönderimi - Her dosyayı ayrı ayrı işle
         convertForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             
@@ -401,62 +465,96 @@
                 return;
             }
 
-            const formData = new FormData(convertForm);
             const format = document.querySelector('input[name="format"]:checked').value;
+            const quality = qualitySlider.value;
 
-            // Dosyaları ekle
+            // Tüm dosyaları bekliyor durumuna getir
             selectedFiles.forEach(file => {
-                formData.append('files[]', file);
+                file.status = 'pending';
+                file.progress = 0;
             });
-
-            formData.append('quality', qualitySlider.value);
-            formData.append('format', format);
+            updateFileList();
 
             convertBtn.disabled = true;
             loading.classList.add('show');
             hideMessages();
 
-            try {
-                const response = await fetch('/convert-multiple', {
-                    method: 'POST',
-                    body: formData
-                });
+            let successCount = 0;
+            let errorCount = 0;
 
-                const data = await response.json();
+            // Her dosyayı sırayla işle
+            for (let i = 0; i < selectedFiles.length; i++) {
+                const file = selectedFiles[i];
+                
+                // Durumu güncelle
+                file.status = 'processing';
+                file.progress = 10;
+                updateFileList();
 
-                if (response.ok && data.success > 0) {
-                    // Dosyaları indir
-                    data.results.forEach(result => {
-                        const binaryString = atob(result.data);
+                try {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    formData.append('quality', quality);
+                    formData.append('format', format);
+
+                    file.progress = 50;
+                    updateFileList();
+
+                    const response = await fetch('/convert-single', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok && data.success) {
+                        file.status = 'success';
+                        file.progress = 100;
+                        
+                        // Dosyayı indir
+                        const binaryString = atob(data.data);
                         const bytes = new Uint8Array(binaryString.length);
-                        for (let i = 0; i < binaryString.length; i++) {
-                            bytes[i] = binaryString.charCodeAt(i);
+                        for (let j = 0; j < binaryString.length; j++) {
+                            bytes[j] = binaryString.charCodeAt(j);
                         }
-                        const blob = new Blob([bytes], { type: result.mimetype });
+                        const blob = new Blob([bytes], { type: data.mimetype });
                         const url = window.URL.createObjectURL(blob);
                         const a = document.createElement('a');
                         a.href = url;
-                        a.download = result.filename;
+                        a.download = data.filename;
                         document.body.appendChild(a);
                         a.click();
                         window.URL.revokeObjectURL(url);
                         document.body.removeChild(a);
-                    });
-
-                    let message = `${data.success} dosya başarıyla dönüştürüldü!`;
-                    if (data.errors > 0) {
-                        message += ` ${data.errors} dosyada hata oluştu.`;
+                        
+                        successCount++;
+                    } else {
+                        file.status = 'error';
+                        file.progress = 0;
+                        errorCount++;
                     }
-                    showSuccess(message);
-                } else {
-                    showError(data.error || data.error_messages?.join(', ') || 'Dönüştürme başarısız oldu');
+                } catch (err) {
+                    file.status = 'error';
+                    file.progress = 0;
+                    errorCount++;
                 }
-            } catch (err) {
-                showError('Bir hata oluştu: ' + err.message);
-            } finally {
-                convertBtn.disabled = false;
-                loading.classList.remove('show');
+
+                updateFileList();
             }
+
+            // Özet mesajı göster
+            if (successCount > 0) {
+                let message = `${successCount} dosya başarıyla dönüştürüldü!`;
+                if (errorCount > 0) {
+                    message += ` ${errorCount} dosyada hata oluştu.`;
+                }
+                showSuccess(message);
+            } else {
+                showError('Tüm dosyalarda hata oluştu');
+            }
+
+            convertBtn.disabled = false;
+            loading.classList.remove('show');
         });
 
         function showError(message) {

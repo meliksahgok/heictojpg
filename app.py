@@ -75,11 +75,13 @@ def convert_heic_to_format(heic_path, output_format='jpg', quality=95):
         img_io = io.BytesIO()
         
         if output_format.lower() == 'webp':
-            image.save(img_io, 'WEBP', quality=quality, method=6)
+            # WebP için optimize edilmiş ayarlar
+            image.save(img_io, 'WEBP', quality=quality, method=4)  # method=4 daha hızlı
             mimetype = 'image/webp'
             extension = 'webp'
         else:
-            image.save(img_io, 'JPEG', quality=quality, optimize=True)
+            # JPG için optimize edilmiş ayarlar
+            image.save(img_io, 'JPEG', quality=quality, optimize=False)  # optimize=False daha hızlı
             mimetype = 'image/jpeg'
             extension = 'jpg'
         
@@ -148,59 +150,48 @@ def convert():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/convert-multiple', methods=['POST'])
-def convert_multiple():
-    """Birden fazla HEIC dosyasını dönüştür"""
-    if 'files[]' not in request.files:
+@app.route('/convert-single', methods=['POST'])
+def convert_single():
+    """Tek bir HEIC dosyasını dönüştür (progress tracking için)"""
+    if 'file' not in request.files:
         return jsonify({'error': 'Dosya seçilmedi'}), 400
     
-    files = request.files.getlist('files[]')
+    file = request.files['file']
     
-    if not files or files[0].filename == '':
+    if file.filename == '':
         return jsonify({'error': 'Dosya seçilmedi'}), 400
     
-    # Format ve kalite ayarlarını al
-    output_format = request.form.get('format', 'jpg').lower()
-    if output_format not in ('jpg', 'webp'):
-        output_format = 'jpg'
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'Sadece HEIC dosyaları desteklenir'}), 400
     
-    quality = int(request.form.get('quality', 95))
-    if not (1 <= quality <= 100):
-        quality = 95
-    
-    results = []
-    errors = []
-    
-    for file in files:
-        if not allowed_file(file.filename):
-            errors.append(f"{file.filename}: Sadece HEIC dosyaları desteklenir")
-            continue
+    try:
+        output_format = request.form.get('format', 'jpg').lower()
+        if output_format not in ('jpg', 'webp'):
+            output_format = 'jpg'
         
-        try:
-            filename = secure_filename(file.filename)
-            input_path = Path(app.config['UPLOAD_FOLDER']) / filename
-            file.save(str(input_path))
-            
-            output_bytes, mimetype, extension = convert_heic_to_format(input_path, output_format, quality)
+        quality = int(request.form.get('quality', 95))
+        if not (1 <= quality <= 100):
+            quality = 95
+        
+        filename = secure_filename(file.filename)
+        input_path = Path(app.config['UPLOAD_FOLDER']) / filename
+        file.save(str(input_path))
+        
+        output_bytes, mimetype, extension = convert_heic_to_format(input_path, output_format, quality)
+        input_path.unlink()
+        
+        output_filename = Path(filename).stem + '.' + extension
+        
+        return jsonify({
+            'success': True,
+            'filename': output_filename,
+            'data': base64.b64encode(output_bytes).decode('utf-8'),
+            'mimetype': mimetype
+        })
+    except Exception as e:
+        if 'input_path' in locals() and input_path.exists():
             input_path.unlink()
-            
-            output_filename = Path(filename).stem + '.' + extension
-            results.append({
-                'filename': output_filename,
-                'data': base64.b64encode(output_bytes).decode('utf-8'),  # Base64 encode
-                'mimetype': mimetype
-            })
-        except Exception as e:
-            errors.append(f"{file.filename}: {str(e)}")
-            if 'input_path' in locals() and input_path.exists():
-                input_path.unlink()
-    
-    return jsonify({
-        'success': len(results),
-        'errors': len(errors),
-        'results': results,
-        'error_messages': errors
-    })
+        return jsonify({'error': str(e), 'success': False}), 500
 
 
 @app.route('/health')
