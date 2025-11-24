@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-HEIC to JPG Web Converter
-Web tabanlı HEIC to JPG dönüştürücü uygulaması
+HEIC to JPG/WebP Web Converter
+Web tabanlı HEIC to JPG/WebP dönüştürücü uygulaması
 """
 
 import os
@@ -34,36 +34,57 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-def convert_heic_to_jpg_bytes(heic_path, quality=95):
+def convert_heic_to_format(heic_path, output_format='jpg', quality=95):
     """
-    HEIC dosyasını JPG'ye dönüştürür ve bytes olarak döndürür
+    HEIC dosyasını JPG veya WebP'ye dönüştürür ve bytes olarak döndürür
     
     Args:
         heic_path: HEIC dosyasının yolu
-        quality: JPG kalitesi (1-100)
+        output_format: Çıkış formatı ('jpg' veya 'webp')
+        quality: Kalite (1-100)
     
     Returns:
-        bytes: JPG dosyasının bytes verisi
+        tuple: (bytes, mimetype, extension)
     """
     try:
         image = Image.open(heic_path)
         
-        # RGB moduna dönüştür
-        if image.mode in ('RGBA', 'LA', 'P'):
-            rgb_image = Image.new('RGB', image.size, (255, 255, 255))
-            if image.mode == 'P':
-                image = image.convert('RGBA')
-            rgb_image.paste(image, mask=image.split()[-1] if image.mode in ('RGBA', 'LA') else None)
-            image = rgb_image
-        elif image.mode != 'RGB':
-            image = image.convert('RGB')
+        # WebP için RGBA modunu koru, JPG için RGB'ye dönüştür
+        if output_format.lower() == 'webp':
+            # WebP şeffaflığı destekler, RGBA modunu koru
+            if image.mode not in ('RGB', 'RGBA'):
+                if image.mode == 'P':
+                    image = image.convert('RGBA')
+                elif image.mode in ('LA', 'L'):
+                    image = image.convert('RGBA')
+                else:
+                    image = image.convert('RGBA')
+        else:
+            # JPG için RGB'ye dönüştür
+            if image.mode in ('RGBA', 'LA', 'P'):
+                rgb_image = Image.new('RGB', image.size, (255, 255, 255))
+                if image.mode == 'P':
+                    image = image.convert('RGBA')
+                rgb_image.paste(image, mask=image.split()[-1] if image.mode in ('RGBA', 'LA') else None)
+                image = rgb_image
+            elif image.mode != 'RGB':
+                image = image.convert('RGB')
         
         # Bytes buffer'a kaydet
         img_io = io.BytesIO()
-        image.save(img_io, 'JPEG', quality=quality, optimize=True)
+        
+        if output_format.lower() == 'webp':
+            image.save(img_io, 'WEBP', quality=quality, method=6)
+            mimetype = 'image/webp'
+            extension = 'webp'
+        else:
+            image.save(img_io, 'JPEG', quality=quality, optimize=True)
+            mimetype = 'image/jpeg'
+            extension = 'jpg'
+        
         img_io.seek(0)
         
-        return img_io.getvalue()
+        return img_io.getvalue(), mimetype, extension
     except Exception as e:
         raise Exception(f"Dönüştürme hatası: {str(e)}")
 
@@ -76,7 +97,7 @@ def index():
 
 @app.route('/convert', methods=['POST'])
 def convert():
-    """HEIC dosyasını JPG'ye dönüştür"""
+    """HEIC dosyasını JPG veya WebP'ye dönüştür"""
     if 'file' not in request.files:
         return jsonify({'error': 'Dosya seçilmedi'}), 400
     
@@ -89,7 +110,11 @@ def convert():
         return jsonify({'error': 'Sadece HEIC dosyaları desteklenir'}), 400
     
     try:
-        # Kalite ayarını al
+        # Format ve kalite ayarlarını al
+        output_format = request.form.get('format', 'jpg').lower()
+        if output_format not in ('jpg', 'webp'):
+            output_format = 'jpg'
+        
         quality = int(request.form.get('quality', 95))
         if not (1 <= quality <= 100):
             quality = 95
@@ -100,19 +125,19 @@ def convert():
         file.save(str(input_path))
         
         # Dönüştür
-        jpg_bytes = convert_heic_to_jpg_bytes(input_path, quality)
+        output_bytes, mimetype, extension = convert_heic_to_format(input_path, output_format, quality)
         
         # Geçici dosyayı sil
         input_path.unlink()
         
-        # JPG dosya adı
-        jpg_filename = Path(filename).stem + '.jpg'
+        # Çıkış dosya adı
+        output_filename = Path(filename).stem + '.' + extension
         
         return send_file(
-            io.BytesIO(jpg_bytes),
-            mimetype='image/jpeg',
+            io.BytesIO(output_bytes),
+            mimetype=mimetype,
             as_attachment=True,
-            download_name=jpg_filename
+            download_name=output_filename
         )
         
     except Exception as e:
