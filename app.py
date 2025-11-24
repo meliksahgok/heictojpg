@@ -7,6 +7,7 @@ Web tabanlı HEIC to JPG/WebP dönüştürücü uygulaması
 
 import os
 import io
+import base64
 from pathlib import Path
 from flask import Flask, render_template, request, send_file, jsonify, flash
 from werkzeug.utils import secure_filename
@@ -97,7 +98,7 @@ def index():
 
 @app.route('/convert', methods=['POST'])
 def convert():
-    """HEIC dosyasını JPG veya WebP'ye dönüştür"""
+    """HEIC dosyasını JPG veya WebP'ye dönüştür (tek dosya)"""
     if 'file' not in request.files:
         return jsonify({'error': 'Dosya seçilmedi'}), 400
     
@@ -145,6 +146,61 @@ def convert():
         if 'input_path' in locals() and input_path.exists():
             input_path.unlink()
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/convert-multiple', methods=['POST'])
+def convert_multiple():
+    """Birden fazla HEIC dosyasını dönüştür"""
+    if 'files[]' not in request.files:
+        return jsonify({'error': 'Dosya seçilmedi'}), 400
+    
+    files = request.files.getlist('files[]')
+    
+    if not files or files[0].filename == '':
+        return jsonify({'error': 'Dosya seçilmedi'}), 400
+    
+    # Format ve kalite ayarlarını al
+    output_format = request.form.get('format', 'jpg').lower()
+    if output_format not in ('jpg', 'webp'):
+        output_format = 'jpg'
+    
+    quality = int(request.form.get('quality', 95))
+    if not (1 <= quality <= 100):
+        quality = 95
+    
+    results = []
+    errors = []
+    
+    for file in files:
+        if not allowed_file(file.filename):
+            errors.append(f"{file.filename}: Sadece HEIC dosyaları desteklenir")
+            continue
+        
+        try:
+            filename = secure_filename(file.filename)
+            input_path = Path(app.config['UPLOAD_FOLDER']) / filename
+            file.save(str(input_path))
+            
+            output_bytes, mimetype, extension = convert_heic_to_format(input_path, output_format, quality)
+            input_path.unlink()
+            
+            output_filename = Path(filename).stem + '.' + extension
+            results.append({
+                'filename': output_filename,
+                'data': base64.b64encode(output_bytes).decode('utf-8'),  # Base64 encode
+                'mimetype': mimetype
+            })
+        except Exception as e:
+            errors.append(f"{file.filename}: {str(e)}")
+            if 'input_path' in locals() and input_path.exists():
+                input_path.unlink()
+    
+    return jsonify({
+        'success': len(results),
+        'errors': len(errors),
+        'results': results,
+        'error_messages': errors
+    })
 
 
 @app.route('/health')
